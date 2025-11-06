@@ -7,6 +7,9 @@
 
 # python
 .venv
+venv/
+env/
+ENV/
 .mypy_cache
 .idea
 

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import queue
 import threading
 from collections.abc import Iterator
@@ -13,9 +14,30 @@ from agents import TContext
 from agents.run import Runner
 
 from onyx.agents.agent_sdk.message_types import AgentSDKMessage
+from onyx.configs import model_configs
 from onyx.utils.threadpool_concurrency import run_in_background
 
 T = TypeVar("T")
+
+
+class _RunResultStreamingShim:
+    """Lightweight adapter to mimic RunResultStreaming for non-stream runs."""
+
+    def __init__(self, non_stream_result: object) -> None:
+        self._result = non_stream_result
+
+    def to_input_list(self) -> list[AgentSDKMessage]:
+        return self._result.to_input_list()  # type: ignore[attr-defined]
+
+    def cancel(self) -> None:
+        return None
+
+    async def stream_events(self):
+        if False:  # pragma: no cover
+            yield None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._result, name)
 
 
 class SyncAgentStream(Generic[T]):
@@ -124,31 +146,45 @@ class SyncAgentStream(Generic[T]):
 
         async def worker() -> None:
             try:
-                # Start the streamed run inside the loop thread
-                self.streamed = Runner.run_streamed(
-                    self._agent,
-                    self._input,  # type: ignore[arg-type]
-                    context=self._context,
-                    max_turns=self._max_turns,
-                )
+                if model_configs.ONYX_DISABLE_AGENT_STREAMING:
+                    run_fn = getattr(Runner, "run", None)
+                    if run_fn is None:
+                        raise RuntimeError("Runner.run is not available; agent streaming cannot be disabled.")
 
-                # If cancel was requested before we created _streamed, honor it now
-                if self._cancel_requested.is_set():
-                    await self.streamed.cancel()  # type: ignore[func-returns-value]
+                    result = run_fn(
+                        self._agent,
+                        self._input,  # type: ignore[arg-type]
+                        context=self._context,
+                        max_turns=self._max_turns,
+                    )
+                    if inspect.isawaitable(result):
+                        result = await result
+                    self.streamed = _RunResultStreamingShim(result)  # type: ignore[assignment]
+                else:
+                    # Start the streamed run inside the loop thread
+                    self.streamed = Runner.run_streamed(
+                        self._agent,
+                        self._input,  # type: ignore[arg-type]
+                        context=self._context,
+                        max_turns=self._max_turns,
+                    )
 
-                # Consume async events and forward into the thread-safe queue
-                async for ev in self.streamed.stream_events():
-                    # Early exit if a late cancel arrives
+                    # If cancel was requested before we created _streamed, honor it now
                     if self._cancel_requested.is_set():
-                        # Try to cancel gracefully; don't break until cancel takes effect
-                        try:
-                            await self.streamed.cancel()  # type: ignore[func-returns-value]
-                        except Exception:
-                            pass
-                        break
-                    # This put() may block if queue_maxsize > 0 (backpressure)
-                    self._q.put(ev)
+                        await self.streamed.cancel()  # type: ignore[func-returns-value]
 
+                    # Consume async events and forward into the thread-safe queue
+                    async for ev in self.streamed.stream_events():
+                        # Early exit if a late cancel arrives
+                        if self._cancel_requested.is_set():
+                            # Try to cancel gracefully; don't break until cancel takes effect
+                            try:
+                                await self.streamed.cancel()  # type: ignore[func-returns-value]
+                            except Exception:
+                                pass
+                            break
+                        # This put() may block if queue_maxsize > 0 (backpressure)
+                        self._q.put(ev)
             except BaseException as e:
                 # Save exception to surface on the sync iterator side
                 self._exc = e
@@ -168,9 +204,7 @@ class SyncAgentStream(Generic[T]):
                 for task in pending:
                     task.cancel()
                 if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             except Exception:
                 pass
             finally:

@@ -99,5 +99,9 @@ Join our open source community on **[Discord](https://discord.gg/TDJ59cGV2X)**!
 
 
 
+## ⚙️ Configuration
+- `ONYX_DISABLE_AGENT_STREAMING=true` &mdash; prevent the Agents SDK and underlying LLM providers from using streaming. Responses are emitted as a single final packet instead of incremental deltas.
+
+
 ## 💡 Contributing
 Looking to contribute? Please check out the [Contribution Guide](CONTRIBUTING.md) for more details.

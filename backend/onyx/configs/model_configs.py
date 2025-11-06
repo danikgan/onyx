@@ -13,18 +13,14 @@ import os
 # NOTE: DO NOT CHANGE SET THESE UNLESS YOU KNOW WHAT YOU ARE DOING
 # IDEALLY, YOU SHOULD CHANGE EMBEDDING MODELS VIA THE UI
 DEFAULT_DOCUMENT_ENCODER_MODEL = "nomic-ai/nomic-embed-text-v1"
-DOCUMENT_ENCODER_MODEL = (
-    os.environ.get("DOCUMENT_ENCODER_MODEL") or DEFAULT_DOCUMENT_ENCODER_MODEL
-)
+DOCUMENT_ENCODER_MODEL = os.environ.get("DOCUMENT_ENCODER_MODEL") or DEFAULT_DOCUMENT_ENCODER_MODEL
 # If the below is changed, Vespa deployment must also be changed
 DOC_EMBEDDING_DIM = int(os.environ.get("DOC_EMBEDDING_DIM") or 768)
 # Model should be chosen with 512 context size, ideally don't change this
 # If multipass_indexing is enabled, the max context size would be set to
 # DOC_EMBEDDING_CONTEXT_SIZE * LARGE_CHUNK_RATIO
 DOC_EMBEDDING_CONTEXT_SIZE = 512
-NORMALIZE_EMBEDDINGS = (
-    os.environ.get("NORMALIZE_EMBEDDINGS") or "true"
-).lower() == "true"
+NORMALIZE_EMBEDDINGS = (os.environ.get("NORMALIZE_EMBEDDINGS") or "true").lower() == "true"
 
 # Old default model settings, which are needed for an automatic easy upgrade
 OLD_DEFAULT_DOCUMENT_ENCODER_MODEL = "thenlper/gte-small"
@@ -65,14 +61,10 @@ GEN_AI_MAX_TOKENS = int(os.environ.get("GEN_AI_MAX_TOKENS") or 0) or None
 
 # Set this to be enough for an answer + quotes. Also used for Chat
 # This is the minimum token context we will leave for the LLM to generate an answer
-GEN_AI_NUM_RESERVED_OUTPUT_TOKENS = int(
-    os.environ.get("GEN_AI_NUM_RESERVED_OUTPUT_TOKENS") or 1024
-)
+GEN_AI_NUM_RESERVED_OUTPUT_TOKENS = int(os.environ.get("GEN_AI_NUM_RESERVED_OUTPUT_TOKENS") or 1024)
 
 # Typically, GenAI models nowadays are at least 4K tokens
-GEN_AI_MODEL_FALLBACK_MAX_TOKENS = int(
-    os.environ.get("GEN_AI_MODEL_FALLBACK_MAX_TOKENS") or 4096
-)
+GEN_AI_MODEL_FALLBACK_MAX_TOKENS = int(os.environ.get("GEN_AI_MODEL_FALLBACK_MAX_TOKENS") or 4096)
 
 # Number of tokens from chat history to include at maximum
 # 3000 should be enough context regardless of use, no need to include as much as possible
@@ -88,9 +80,9 @@ GEN_AI_TEMPERATURE = float(os.environ.get("GEN_AI_TEMPERATURE") or 0)
 
 # should be used if you are using a custom LLM inference provider that doesn't support
 # streaming format AND you are still using the langchain/litellm LLM class
-DISABLE_LITELLM_STREAMING = (
-    os.environ.get("DISABLE_LITELLM_STREAMING") or "false"
-).lower() == "true"
+DISABLE_LITELLM_STREAMING = (os.environ.get("DISABLE_LITELLM_STREAMING") or "false").lower() == "true"
+
+ONYX_DISABLE_AGENT_STREAMING = (os.environ.get("ONYX_DISABLE_AGENT_STREAMING") or "false").lower() == "true"
 
 # extra headers to pass to LiteLLM
 LITELLM_EXTRA_HEADERS: dict[str, str] | None = None
@@ -103,9 +95,7 @@ if _LITELLM_EXTRA_HEADERS_RAW:
         from onyx.utils.logger import setup_logger
 
         logger = setup_logger()
-        logger.error(
-            "Failed to parse LITELLM_EXTRA_HEADERS, must be a valid JSON object"
-        )
+        logger.error("Failed to parse LITELLM_EXTRA_HEADERS, must be a valid JSON object")
 
 # if specified, will pass through request headers to the call to the LLM
 LITELLM_PASS_THROUGH_HEADERS: list[str] | None = None
@@ -118,9 +108,7 @@ if _LITELLM_PASS_THROUGH_HEADERS_RAW:
         from onyx.utils.logger import setup_logger
 
         logger = setup_logger()
-        logger.error(
-            "Failed to parse LITELLM_PASS_THROUGH_HEADERS, must be a valid JSON object"
-        )
+        logger.error("Failed to parse LITELLM_PASS_THROUGH_HEADERS, must be a valid JSON object")
 
 
 # if specified, will merge the specified JSON with the existing body of the
@@ -136,6 +124,4 @@ if _LITELLM_EXTRA_BODY_RAW:
 # Whether and how to lower scores for short chunks w/o relevant context
 # Evaluated via custom ML model
 
-USE_INFORMATION_CONTENT_CLASSIFICATION = (
-    os.environ.get("USE_INFORMATION_CONTENT_CLASSIFICATION", "false").lower() == "true"
-)
+USE_INFORMATION_CONTENT_CLASSIFICATION = os.environ.get("USE_INFORMATION_CONTENT_CLASSIFICATION", "false").lower() == "true"

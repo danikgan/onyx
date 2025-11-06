@@ -9,6 +9,7 @@ from onyx.chat.models import PersonaOverrideConfig
 from onyx.configs.app_configs import DISABLE_GENERATIVE_AI
 from onyx.configs.chat_configs import QA_TIMEOUT
 from onyx.configs.model_configs import GEN_AI_TEMPERATURE
+from onyx.configs.model_configs import ONYX_DISABLE_AGENT_STREAMING
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
 from onyx.db.llm import fetch_default_provider
 from onyx.db.llm import fetch_default_vision_provider
@@ -24,6 +25,8 @@ from onyx.llm.llm_provider_options import AZURE_PROVIDER_NAME
 from onyx.llm.llm_provider_options import OLLAMA_API_KEY_CONFIG_KEY
 from onyx.llm.llm_provider_options import OLLAMA_PROVIDER_NAME
 from onyx.llm.llm_provider_options import OPENROUTER_PROVIDER_NAME
+from onyx.llm.litellm_singleton import LitellmModel
+from openai.types.shared.reasoning import Reasoning
 from onyx.llm.override_models import LLMOverride
 from onyx.llm.utils import get_max_input_tokens_from_llm_provider
 from onyx.llm.utils import is_true_openai_model
@@ -37,9 +40,7 @@ from onyx.utils.long_term_log import LongTermLogger
 logger = setup_logger()
 
 
-def _build_provider_extra_headers(
-    provider: str, custom_config: dict[str, str] | None
-) -> dict[str, str]:
+def _build_provider_extra_headers(provider: str, custom_config: dict[str, str] | None) -> dict[str, str]:
     if provider == OLLAMA_PROVIDER_NAME and custom_config:
         raw_api_key = custom_config.get(OLLAMA_API_KEY_CONFIG_KEY)
         api_key = raw_api_key.strip() if raw_api_key else None
@@ -112,9 +113,7 @@ def get_llms_for_persona(
             temperature=temperature_override,
             additional_headers=additional_headers,
             long_term_logger=long_term_logger,
-            max_input_tokens=get_max_input_tokens_from_llm_provider(
-                llm_provider=llm_provider, model_name=model
-            ),
+            max_input_tokens=get_max_input_tokens_from_llm_provider(llm_provider=llm_provider, model_name=model),
         )
 
     return _create_llm(model), _create_llm(fast_model)
@@ -198,21 +197,15 @@ def get_default_llm_with_vision(
             temperature=temperature,
             additional_headers=additional_headers,
             long_term_logger=long_term_logger,
-            max_input_tokens=get_max_input_tokens_from_llm_provider(
-                llm_provider=provider, model_name=model
-            ),
+            max_input_tokens=get_max_input_tokens_from_llm_provider(llm_provider=provider, model_name=model),
         )
 
     with get_session_with_current_tenant() as db_session:
         # Try the default vision provider first
         default_provider = fetch_default_vision_provider(db_session)
         if default_provider and default_provider.default_vision_model:
-            if model_supports_image_input(
-                default_provider.default_vision_model, default_provider.provider
-            ):
-                return create_vision_llm(
-                    default_provider, default_provider.default_vision_model
-                )
+            if model_supports_image_input(default_provider.default_vision_model, default_provider.provider):
+                return create_vision_llm(default_provider, default_provider.default_vision_model)
 
         # Fall back to searching all providers
         providers = fetch_existing_llm_providers(db_session)
@@ -225,33 +218,25 @@ def get_default_llm_with_vision(
         provider_view = LLMProviderView.from_model(provider)
 
         # First priority: Check if provider has a default_vision_model
-        if provider.default_vision_model and model_supports_image_input(
-            provider.default_vision_model, provider.provider
-        ):
+        if provider.default_vision_model and model_supports_image_input(provider.default_vision_model, provider.provider):
             return create_vision_llm(provider_view, provider.default_vision_model)
 
         # If no model-configurations are specified, try default models in priority order
         if not provider.model_configurations:
             # Try default_model_name
-            if provider.default_model_name and model_supports_image_input(
-                provider.default_model_name, provider.provider
-            ):
+            if provider.default_model_name and model_supports_image_input(provider.default_model_name, provider.provider):
                 return create_vision_llm(provider_view, provider.default_model_name)
 
             # Try fast_default_model_name
             if provider.fast_default_model_name and model_supports_image_input(
                 provider.fast_default_model_name, provider.provider
             ):
-                return create_vision_llm(
-                    provider_view, provider.fast_default_model_name
-                )
+                return create_vision_llm(provider_view, provider.fast_default_model_name)
 
         # Otherwise, if model-configurations are specified, check each model
         else:
             for model_configuration in provider.model_configurations:
-                if model_supports_image_input(
-                    model_configuration.name, provider.provider
-                ):
+                if model_supports_image_input(model_configuration.name, provider.provider):
                     return create_vision_llm(provider_view, model_configuration.name)
 
     return None
@@ -277,9 +262,7 @@ def llm_from_provider(
         temperature=temperature,
         additional_headers=additional_headers,
         long_term_logger=long_term_logger,
-        max_input_tokens=get_max_input_tokens_from_llm_provider(
-            llm_provider=llm_provider, model_name=model_name
-        ),
+        max_input_tokens=get_max_input_tokens_from_llm_provider(llm_provider=llm_provider, model_name=model_name),
     )
 
 
@@ -310,9 +293,7 @@ def get_default_llms(
         raise ValueError("No default LLM provider found")
 
     model_name = llm_provider.default_model_name
-    fast_model_name = (
-        llm_provider.fast_default_model_name or llm_provider.default_model_name
-    )
+    fast_model_name = llm_provider.fast_default_model_name or llm_provider.default_model_name
     if not model_name:
         raise ValueError("No default model name found")
     if not fast_model_name:
@@ -418,6 +399,8 @@ def _get_llm_model_and_settings(
     # addtional kwargs (and some kwargs MUST be passed in rather than set as
     # env variables)
     model_kwargs = model_kwargs or {}
+    if ONYX_DISABLE_AGENT_STREAMING:
+        model_kwargs["stream"] = False
     if custom_config:
         for k, v in custom_config.items():
             os.environ[k] = v
@@ -492,9 +475,7 @@ def _get_llm_model_and_settings(
 
     # Create ModelSettings with the provided configuration
     model_settings = ModelSettings(
-        temperature=(
-            temperature if not model_is_reasoning_model(model, provider) else 1.0
-        ),
+        temperature=(temperature if not model_is_reasoning_model(model, provider) else 1.0),
         extra_headers=extra_headers if extra_headers else None,
         extra_args=model_kwargs,
         reasoning=Reasoning(

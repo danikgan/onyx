@@ -54,6 +54,7 @@ services:
       - DISABLE_LLM_QUERY_REPHRASE=${DISABLE_LLM_QUERY_REPHRASE:-}
       - DISABLE_GENERATIVE_AI=${DISABLE_GENERATIVE_AI:-}
       - DISABLE_LITELLM_STREAMING=${DISABLE_LITELLM_STREAMING:-}
+      - ONYX_DISABLE_AGENT_STREAMING=${ONYX_DISABLE_AGENT_STREAMING:-}
       - LITELLM_EXTRA_HEADERS=${LITELLM_EXTRA_HEADERS:-}
       - BING_API_KEY=${BING_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY:-}
@@ -110,7 +111,7 @@ services:
 
       # Show extra/uncommon connectors
       - SHOW_EXTRA_CONNECTORS=${SHOW_EXTRA_CONNECTORS:-true}
-      
+
       # Enables the use of bedrock models or IAM Auth
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
@@ -120,7 +121,7 @@ services:
       - USE_IAM_AUTH=${USE_IAM_AUTH:-}
 
       # Vespa Language Forcing
-      # See: https://docs.vespa.ai/en/linguistics.html 
+      # See: https://docs.vespa.ai/en/linguistics.html
       - VESPA_LANGUAGE_OVERRIDE=${VESPA_LANGUAGE_OVERRIDE:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -168,6 +169,7 @@ services:
       - DISABLE_GENERATIVE_AI=${DISABLE_GENERATIVE_AI:-}
       - GENERATIVE_MODEL_ACCESS_CHECK_FREQ=${GENERATIVE_MODEL_ACCESS_CHECK_FREQ:-}
       - DISABLE_LITELLM_STREAMING=${DISABLE_LITELLM_STREAMING:-}
+      - ONYX_DISABLE_AGENT_STREAMING=${ONYX_DISABLE_AGENT_STREAMING:-}
       - LITELLM_EXTRA_HEADERS=${LITELLM_EXTRA_HEADERS:-}
       - GEN_AI_API_KEY=${GEN_AI_API_KEY:-}
       - BING_API_KEY=${BING_API_KEY:-}
@@ -429,7 +431,7 @@ services:
     # NOTE: we have to use dos2unix to remove Carriage Return chars from the file
     # in order to make this work on both Unix-like systems and windows
     command: >
-      /bin/sh -c "dos2unix /etc/nginx/conf.d/run-nginx.sh 
+      /bin/sh -c "dos2unix /etc/nginx/conf.d/run-nginx.sh
       && /etc/nginx/conf.d/run-nginx.sh app.conf.template"
 
   minio:
