@@ -6,6 +6,7 @@ from langchain_core.messages.tool import ToolCall
 from langchain_core.messages.tool import ToolMessage
 from pydantic import BaseModel
 
+from onyx.chat.token_budget import clamp_tool_output
 from onyx.natural_language_processing.utils import BaseTokenizer
 
 # Langchain has their own version of pydantic which is version 1
@@ -14,6 +15,22 @@ from onyx.natural_language_processing.utils import BaseTokenizer
 def build_tool_message(
     tool_call: ToolCall, tool_content: str | list[str | dict[str, Any]]
 ) -> ToolMessage:
+    if isinstance(tool_content, str):
+        tool_content = clamp_tool_output(tool_content)
+    elif isinstance(tool_content, list):
+        clamped_parts: list[str | dict[str, Any]] = []
+        for part in tool_content:
+            if isinstance(part, str):
+                clamped_parts.append(clamp_tool_output(part))
+            elif isinstance(part, dict):
+                new_part = dict(part)
+                text_value = new_part.get("text")
+                if isinstance(text_value, str):
+                    new_part["text"] = clamp_tool_output(text_value)
+                clamped_parts.append(new_part)
+            else:
+                clamped_parts.append(part)
+        tool_content = clamped_parts
     return ToolMessage(
         tool_call_id=tool_call["id"] or "",
         name=tool_call["name"],

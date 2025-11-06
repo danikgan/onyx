@@ -8,6 +8,7 @@ from onyx.chat.prompt_builder.citations_prompt import (
     build_citations_system_message,
 )
 from onyx.chat.prompt_builder.citations_prompt import build_citations_user_message
+from onyx.chat.token_budget import clamp_llm_docs
 from onyx.connectors.models import Document
 from onyx.connectors.models import IndexingDocument
 from onyx.connectors.models import Section
@@ -36,6 +37,7 @@ def build_next_prompt_for_search_like_tool(
         final_context_documents = cast(
             list[LlmDoc], final_context_docs_response.response
         )
+        final_context_documents = clamp_llm_docs(final_context_documents)
     else:
         # if using tool calling llm, then the final context documents are the tool responses
         final_context_documents = []

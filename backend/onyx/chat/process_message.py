@@ -38,6 +38,13 @@ from onyx.chat.prompt_builder.answer_prompt_builder import (
     default_build_system_message_v2,
 )
 from onyx.chat.prompt_builder.answer_prompt_builder import default_build_user_message
+from onyx.chat.token_budget import (
+    approx_tokens,
+    clamp_llm_docs,
+    count_message_tokens,
+    enforce_budget,
+    extract_rag_chunks,
+)
 from onyx.chat.turn import fast_chat_turn
 from onyx.chat.turn.infra.emitter import get_default_emitter
 from onyx.chat.turn.models import ChatTurnDependencies
@@ -46,6 +53,11 @@ from onyx.configs.chat_configs import CHAT_TARGET_CHUNK_PERCENTAGE
 from onyx.configs.chat_configs import DISABLE_LLM_CHOOSE_SEARCH
 from onyx.configs.chat_configs import MAX_CHUNKS_FED_TO_CHAT
 from onyx.configs.chat_configs import SELECTED_SECTIONS_MAX_WINDOW_PERCENTAGE
+from onyx.configs.token_budget_configs import (
+    MAX_OUTPUT_TOKENS,
+    MIN_OUTPUT_TOKENS,
+    MODEL_WINDOW_TOKENS,
+)
 from onyx.configs.constants import DocumentSource
 from onyx.configs.constants import MessageType
 from onyx.configs.constants import MilestoneRecordType
@@ -585,6 +597,7 @@ def stream_chat_message_objects(
             project_file_ids=project_file_ids,
             in_memory_user_files=in_memory_user_files,
         )
+        project_llm_docs = clamp_llm_docs(project_llm_docs)
 
         selected_db_search_docs = None
         selected_sections: list[InferenceSection] | None = None
@@ -900,9 +913,47 @@ def _fast_message_stream(
 ) -> Generator[Packet, None, None]:
     # TODO: clean up this jank
     is_responses_api = isinstance(llm_model, OpenAIResponsesModel)
-    messages = base_messages_to_agent_sdk_msgs(
-        answer.graph_inputs.prompt_builder.build(), is_responses_api=is_responses_api
+    prompt_messages = answer.graph_inputs.prompt_builder.build()
+    raw_messages = base_messages_to_agent_sdk_msgs(
+        prompt_messages, is_responses_api=is_responses_api
     )
+    original_rag_chunks = extract_rag_chunks(raw_messages)
+    existing_output_limit = None
+    if model_settings.max_tokens is not None:
+        existing_output_limit = model_settings.max_tokens
+    elif isinstance(model_settings.extra_args, dict):
+        existing_output_limit = model_settings.extra_args.get("max_output_tokens")
+    initial_max_output = existing_output_limit or MAX_OUTPUT_TOKENS
+    if initial_max_output < MIN_OUTPUT_TOKENS:
+        initial_max_output = MIN_OUTPUT_TOKENS
+    budgeted_messages, rag_block, tool_payloads, output_token_limit = enforce_budget(
+        raw_messages,
+        rag_chunks=original_rag_chunks,
+        model_window_tokens=MODEL_WINDOW_TOKENS,
+        max_output_tokens=initial_max_output,
+        min_output_tokens=MIN_OUTPUT_TOKENS,
+    )
+    messages = budgeted_messages
+    input_token_estimate = count_message_tokens(messages)
+    history_token_estimate = max(0, input_token_estimate - approx_tokens(rag_block))
+    rag_used_chunks = len(extract_rag_chunks(messages))
+    tool_char_total = sum(len(payload) for payload in tool_payloads)
+    logger.info(
+        "budget: rag_chunks=%s used=%s, rag_chars=%s, history_tokens≈%s, tool_chars=%s, input≈%s, max_output=%s, window=%s",
+        len(original_rag_chunks),
+        rag_used_chunks,
+        len(rag_block),
+        history_token_estimate,
+        tool_char_total,
+        input_token_estimate,
+        output_token_limit,
+        MODEL_WINDOW_TOKENS,
+    )
+    model_settings.max_tokens = output_token_limit
+    if isinstance(model_settings.extra_args, dict) and "max_output_tokens" in model_settings.extra_args:
+        extra_args = dict(model_settings.extra_args)
+        extra_args.pop("max_output_tokens", None)
+        model_settings.extra_args = extra_args or None
     emitter = get_default_emitter()
     return fast_chat_turn.fast_chat_turn(
         messages=messages,

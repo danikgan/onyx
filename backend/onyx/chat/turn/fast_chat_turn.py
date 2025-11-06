@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import cast
+from typing import Any, cast
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -27,6 +27,10 @@ from onyx.chat.packet_sniffing import has_had_message_start
 from onyx.chat.prompt_builder.answer_prompt_builder import (
     default_build_system_message_v2,
 )
+from onyx.chat.token_budget import (
+    enforce_budget,
+    extract_rag_chunks,
+)
 from onyx.chat.stop_signal_checker import is_connected
 from onyx.chat.stop_signal_checker import reset_cancel_status
 from onyx.chat.stream_processing.citation_processing import CitationProcessor
@@ -42,6 +46,11 @@ from onyx.chat.turn.models import ChatTurnDependencies
 from onyx.chat.turn.prompts.custom_instruction import build_custom_instructions
 from onyx.chat.turn.save_turn import extract_final_answer_from_packets
 from onyx.chat.turn.save_turn import save_turn
+from onyx.configs.token_budget_configs import (
+    MAX_OUTPUT_TOKENS,
+    MIN_OUTPUT_TOKENS,
+    MODEL_WINDOW_TOKENS,
+)
 from onyx.server.query_and_chat.streaming_models import CitationDelta
 from onyx.server.query_and_chat.streaming_models import CitationInfo
 from onyx.server.query_and_chat.streaming_models import CitationStart
@@ -116,6 +125,33 @@ def _run_agent_loop(
             + [current_user_message]
         )
         current_messages = previous_messages + agent_turn_messages
+
+        current_messages_dicts = cast(list[dict[str, Any]], [dict(msg) for msg in current_messages])
+        rag_chunks = extract_rag_chunks(current_messages_dicts)
+        base_max_output = dependencies.model_settings.max_tokens or MAX_OUTPUT_TOKENS
+        if base_max_output < MIN_OUTPUT_TOKENS:
+            base_max_output = MIN_OUTPUT_TOKENS
+        budgeted_messages, _, _, output_limit = enforce_budget(
+            current_messages_dicts,
+            rag_chunks=rag_chunks,
+            model_window_tokens=MODEL_WINDOW_TOKENS,
+            max_output_tokens=base_max_output,
+            min_output_tokens=MIN_OUTPUT_TOKENS,
+        )
+        current_messages = cast(list[AgentSDKMessage], budgeted_messages)
+        dependencies.model_settings.max_tokens = output_limit
+        if isinstance(dependencies.model_settings.extra_args, dict) and "max_output_tokens" in dependencies.model_settings.extra_args:
+            extra_args = dict(dependencies.model_settings.extra_args)
+            extra_args.pop("max_output_tokens", None)
+            dependencies.model_settings.extra_args = extra_args or None
+
+        tail_len = len(agent_turn_messages)
+        if tail_len:
+            previous_messages = current_messages[:-tail_len]
+            agent_turn_messages = current_messages[-tail_len:]
+        else:
+            previous_messages = current_messages
+            agent_turn_messages = []
 
         if not available_tools:
             tool_choice = None
