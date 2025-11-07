@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any, cast
@@ -9,6 +10,7 @@ from agents import RawResponsesStreamEvent
 from agents import RunResultStreaming
 from agents import ToolCallItem
 from agents.tracing import trace
+from agents.exceptions import ModelBehaviorError
 
 from onyx.agents.agent_sdk.message_types import AgentSDKMessage
 from onyx.agents.agent_sdk.message_types import InputTextContent
@@ -71,6 +73,7 @@ if TYPE_CHECKING:
     from litellm import ResponseFunctionToolCall
 
 MAX_ITERATIONS = 10
+logger = logging.getLogger(__name__)
 
 
 # TODO -- this can be refactored out and played with in evals + normal demo
@@ -95,9 +98,7 @@ def _run_agent_loop(
     iteration_count = 0
 
     while not last_call_is_final:
-        available_tools: Sequence[Tool] = (
-            dependencies.tools if iteration_count < MAX_ITERATIONS else []
-        )
+        available_tools: Sequence[Tool] = dependencies.tools if iteration_count < MAX_ITERATIONS else []
         memories = get_memories(dependencies.user_or_none, dependencies.db_session)
         # TODO: The system is rather prompt-cache efficient except for rebuilding the system prompt.
         # The biggest offender is when we hit max iterations and then all the tool calls cannot
@@ -111,11 +112,7 @@ def _run_agent_loop(
         )
         new_system_prompt = SystemMessage(
             role="system",
-            content=[
-                InputTextContent(
-                    type="input_text", text=str(langchain_system_message.content)
-                )
-            ],
+            content=[InputTextContent(type="input_text", text=str(langchain_system_message.content))],
         )
         custom_instructions = build_custom_instructions(prompt_config)
         previous_messages = (
@@ -140,7 +137,10 @@ def _run_agent_loop(
         )
         current_messages = cast(list[AgentSDKMessage], budgeted_messages)
         dependencies.model_settings.max_tokens = output_limit
-        if isinstance(dependencies.model_settings.extra_args, dict) and "max_output_tokens" in dependencies.model_settings.extra_args:
+        if (
+            isinstance(dependencies.model_settings.extra_args, dict)
+            and "max_output_tokens" in dependencies.model_settings.extra_args
+        ):
             extra_args = dict(dependencies.model_settings.extra_args)
             extra_args.pop("max_output_tokens", None)
             dependencies.model_settings.extra_args = extra_args or None
@@ -176,14 +176,15 @@ def _run_agent_loop(
             context=ctx,
         )
         streamed, tool_call_events = _process_stream(
-            agent_stream, chat_session_id, dependencies, ctx
+            agent_stream,
+            chat_session_id,
+            dependencies,
+            ctx,
+            previous_messages,
         )
 
         all_messages_after_stream = streamed.to_input_list()
-        agent_turn_messages = [
-            cast(AgentSDKMessage, msg)
-            for msg in all_messages_after_stream[len(previous_messages) :]
-        ]
+        agent_turn_messages = [cast(AgentSDKMessage, msg) for msg in all_messages_after_stream[len(previous_messages) :]]
 
         # Apply context handlers in order:
         # 1. Remove all user messages in the middle (previous reminders)
@@ -216,9 +217,7 @@ def _run_agent_loop(
 
         # TODO: Make this configurable on OnyxAgent level
         stopping_tools = ["image_generation"]
-        if len(tool_call_events) == 0 or any(
-            tool.name in stopping_tools for tool in tool_call_events
-        ):
+        if len(tool_call_events) == 0 or any(tool.name in stopping_tools for tool in tool_call_events):
             last_call_is_final = True
         iteration_count += 1
 
@@ -268,15 +267,10 @@ def _fast_chat_turn_core(
         dependencies=dependencies,
         ctx=ctx,
     )
-    final_answer = extract_final_answer_from_packets(
-        dependencies.emitter.packet_history
-    )
+    final_answer = extract_final_answer_from_packets(dependencies.emitter.packet_history)
     # TODO: Make this error handling more robust and not so specific to the qwen ollama cloud case
     # where if it happens to any cloud questions, it hangs on read url
-    has_image_generation = any(
-        packet.obj.type == "image_generation_tool_delta"
-        for packet in dependencies.emitter.packet_history
-    )
+    has_image_generation = any(packet.obj.type == "image_generation_tool_delta" for packet in dependencies.emitter.packet_history)
     # Allow empty final answer if image generation tool was used (it produces images, not text)
     if len(final_answer) == 0 and not has_image_generation:
         raise ValueError(
@@ -296,9 +290,7 @@ def _fast_chat_turn_core(
         final_answer=final_answer,
         fetched_documents_cache=ctx.fetched_documents_cache,
     )
-    dependencies.emitter.emit(
-        Packet(ind=ctx.current_run_step, obj=OverallStop(type="stop"))
-    )
+    dependencies.emitter.emit(Packet(ind=ctx.current_run_step, obj=OverallStop(type="stop")))
 
 
 @unified_event_stream
@@ -328,6 +320,7 @@ def _process_stream(
     chat_session_id: UUID,
     dependencies: ChatTurnDependencies,
     ctx: ChatTurnContext,
+    previous_messages: list[AgentSDKMessage],
 ) -> tuple[RunResultStreaming, list["ResponseFunctionToolCall"]]:
     from litellm import ResponseFunctionToolCall
 
@@ -342,46 +335,197 @@ def _process_stream(
     else:
         processor = None
     tool_call_events: list[ResponseFunctionToolCall] = []
-    for ev in agent_stream:
-        connected = is_connected(
-            chat_session_id,
-            dependencies.redis_client,
-        )
-        if not connected:
-            _emit_clean_up_packets(dependencies, ctx)
-            agent_stream.cancel()
-            break
-        packets = _default_packet_translation(
-            ev, ctx, processor, dependencies.emitter.packet_history
-        )
-        for packet in packets:
-            dependencies.emitter.emit(packet)
-        if isinstance(getattr(ev, "item", None), ToolCallItem):
-            tool_call_events.append(cast(ResponseFunctionToolCall, ev.item.raw_item))
+    try:
+        for ev in agent_stream:
+            connected = is_connected(
+                chat_session_id,
+                dependencies.redis_client,
+            )
+            if not connected:
+                _emit_clean_up_packets(dependencies, ctx)
+                agent_stream.cancel()
+                break
+            packets = _default_packet_translation(ev, ctx, processor, dependencies.emitter.packet_history)
+            for packet in packets:
+                dependencies.emitter.emit(packet)
+            if isinstance(getattr(ev, "item", None), ToolCallItem):
+                tool_call_events.append(cast(ResponseFunctionToolCall, ev.item.raw_item))
+    except ModelBehaviorError as exc:
+        logger.warning("Agent stream ended without a final response: %s", exc)
+        recovered = False
+        if agent_stream.streamed is not None:
+            all_messages = [cast(AgentSDKMessage, msg) for msg in agent_stream.streamed.to_input_list()]
+            recovered = _emit_posthoc_agent_response(
+                all_messages,
+                previous_messages,
+                dependencies,
+                ctx,
+                processor,
+            )
+        if not recovered:
+            _ensure_fallback_packet(dependencies, ctx)
     if agent_stream.streamed is None:
         raise ValueError("agent_stream.streamed is None")
     return agent_stream.streamed, tool_call_events
 
 
 # TODO: Maybe in general there's a cleaner way to handle cancellation in the middle of a tool call?
-def _emit_clean_up_packets(
-    dependencies: ChatTurnDependencies, ctx: ChatTurnContext
-) -> None:
-    if not (
-        dependencies.emitter.packet_history
-        and dependencies.emitter.packet_history[-1].obj.type == "message_delta"
-    ):
+def _emit_clean_up_packets(dependencies: ChatTurnDependencies, ctx: ChatTurnContext) -> None:
+    if not (dependencies.emitter.packet_history and dependencies.emitter.packet_history[-1].obj.type == "message_delta"):
         dependencies.emitter.emit(
             Packet(
                 ind=ctx.current_run_step,
+                obj=MessageStart(type="message_start", content="Cancelled", final_documents=None),
+            )
+        )
+    dependencies.emitter.emit(Packet(ind=ctx.current_run_step, obj=SectionEnd(type="section_end")))
+
+
+def _strip_previous_answer_prefix(previous_answer: str, combined_text: str) -> tuple[str, bool]:
+    """Remove a duplicated previous answer prefix while tolerating whitespace differences.
+
+    Returns a tuple of the potentially trimmed text and a flag indicating whether trimming occurred.
+    """
+    if not previous_answer:
+        return combined_text, False
+
+    if combined_text.startswith(previous_answer):
+        remainder = combined_text[len(previous_answer) :].lstrip()
+        return remainder, remainder != combined_text
+
+    i = 0
+    j = 0
+    text_len = len(combined_text)
+    prefix_len = len(previous_answer)
+
+    while i < text_len and j < prefix_len:
+        text_char = combined_text[i]
+        prefix_char = previous_answer[j]
+        if text_char == prefix_char:
+            i += 1
+            j += 1
+            continue
+        if text_char.isspace() and prefix_char.isspace():
+            while i < text_len and combined_text[i].isspace():
+                i += 1
+            while j < prefix_len and previous_answer[j].isspace():
+                j += 1
+            continue
+        # Mismatch means we cannot treat the previous answer as a prefix
+        return combined_text, False
+
+    if j == prefix_len:
+        remainder = combined_text[i:].lstrip()
+        return remainder, remainder != combined_text
+
+    return combined_text, False
+
+
+def _emit_posthoc_agent_response(
+    all_messages: Sequence[AgentSDKMessage],
+    previous_messages: Sequence[AgentSDKMessage],
+    dependencies: ChatTurnDependencies,
+    ctx: ChatTurnContext,
+    processor: CitationProcessor | None,
+) -> bool:
+    emitted = False
+    new_messages = all_messages[len(previous_messages) :]
+    for message in new_messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        text_segments: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                text_segments.append(part.get("text", ""))
+        raw_combined_text = "".join(text_segments)
+        combined_text = raw_combined_text.strip()
+        if not combined_text:
+            continue
+        previous_answer = _get_last_assistant_text(previous_messages).strip()
+        if previous_answer:
+            trimmed, trimmed_any = _strip_previous_answer_prefix(previous_answer, combined_text)
+            if trimmed_any:
+                if not trimmed:
+                    continue
+                combined_text = trimmed
+        needs_start = has_had_message_start(dependencies.emitter.packet_history, ctx.current_run_step)
+        started = False
+        if needs_start:
+            ctx.current_run_step += 1
+            started = True
+            retrieved_search_docs = saved_search_docs_from_llm_docs(ctx.ordered_fetched_documents)
+            dependencies.emitter.emit(
+                Packet(
+                    ind=ctx.current_run_step,
+                    obj=MessageStart(content="", final_documents=retrieved_search_docs),
+                )
+            )
+        if processor:
+            delta_text = ""
+            for response_part in processor.process_token(combined_text):
+                if isinstance(response_part, CitationInfo):
+                    ctx.citations.append(response_part)
+                else:
+                    delta_text += response_part.answer_piece or ""
+        else:
+            delta_text = combined_text
+        if delta_text:
+            dependencies.emitter.emit(Packet(ind=ctx.current_run_step, obj=MessageDelta(content=delta_text)))
+            emitted = True
+        if (started or delta_text) and (
+            not dependencies.emitter.packet_history or dependencies.emitter.packet_history[-1].obj.type != "section_end"
+        ):
+            dependencies.emitter.emit(Packet(ind=ctx.current_run_step, obj=SectionEnd(type="section_end")))
+            emitted = True
+    if emitted:
+        ctx.current_output_index = None
+    return emitted
+
+
+def _get_last_assistant_text(messages: Sequence[AgentSDKMessage]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        collected: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                collected.append(part.get("text", ""))
+        if collected:
+            return "".join(collected)
+    return ""
+
+
+def _ensure_fallback_packet(dependencies: ChatTurnDependencies, ctx: ChatTurnContext) -> None:
+    history = dependencies.emitter.packet_history
+    has_content = any(
+        getattr(packet.obj, "content", "") for packet in history if packet.obj.type in {"message_start", "message_delta"}
+    )
+    new_index = ctx.current_run_step
+    if not has_content:
+        ctx.current_run_step += 1
+        new_index = ctx.current_run_step
+        fallback_documents = saved_search_docs_from_llm_docs(ctx.ordered_fetched_documents)
+        fallback_text = "I ran into an issue finalizing the answer, but here is the latest information I was able to gather."
+        dependencies.emitter.emit(
+            Packet(
+                ind=new_index,
                 obj=MessageStart(
-                    type="message_start", content="Cancelled", final_documents=None
+                    type="message_start",
+                    content=fallback_text,
+                    final_documents=fallback_documents,
                 ),
             )
         )
-    dependencies.emitter.emit(
-        Packet(ind=ctx.current_run_step, obj=SectionEnd(type="section_end"))
-    )
+        history = dependencies.emitter.packet_history
+    if not history or history[-1].obj.type != "section_end":
+        dependencies.emitter.emit(Packet(ind=new_index, obj=SectionEnd(type="section_end")))
+    ctx.current_output_index = None
 
 
 def _emit_citations_for_final_answer(
@@ -481,9 +625,7 @@ def _default_packet_translation(
                 packets.append(
                     Packet(
                         ind=ctx.current_run_step,
-                        obj=MessageStart(
-                            content="", final_documents=retrieved_search_docs
-                        ),
+                        obj=MessageStart(content="", final_documents=retrieved_search_docs),
                     )
                 )
 

@@ -73,12 +73,7 @@ class CancellationMixin:
 
     def _should_trigger_cancellation(self, iteration: int) -> bool:
         """Check if cancellation should be triggered at this iteration."""
-        return (
-            iteration == 2
-            and self.set_fence_func
-            and self.chat_session_id
-            and self.redis_client
-        )
+        return iteration == 2 and self.set_fence_func and self.chat_session_id and self.redis_client
 
     def _trigger_cancellation(self) -> None:
         """Trigger the cancellation signal."""
@@ -127,36 +122,24 @@ def assert_packets_contain_stop(packets: list[Packet]) -> None:
     assert isinstance(packets[-1].obj, OverallStop), "Last packet should be OverallStop"
 
 
-def assert_cancellation_packets(
-    packets: list[Packet], expect_cancelled_message: bool = False
-) -> None:
+def assert_cancellation_packets(packets: list[Packet], expect_cancelled_message: bool = False) -> None:
     """Assert packets after cancellation contain expected structure."""
     min_expected = 3 if expect_cancelled_message else 2
-    assert (
-        len(packets) >= min_expected
-    ), f"Expected at least {min_expected} packets after cancellation, got {len(packets)}"
+    assert len(packets) >= min_expected, f"Expected at least {min_expected} packets after cancellation, got {len(packets)}"
 
     # Last packet should be OverallStop
     assert packets[-1].obj.type == "stop", "Last packet should be OverallStop"
 
     # Second-to-last should be SectionEnd
-    assert (
-        packets[-2].obj.type == "section_end"
-    ), "Second-to-last packet should be SectionEnd"
+    assert packets[-2].obj.type == "section_end", "Second-to-last packet should be SectionEnd"
 
     # If expecting cancelled message, third-to-last should be MessageStart with "Cancelled"
     if expect_cancelled_message:
-        assert (
-            packets[-3].obj.type == "message_start"
-        ), "Third-to-last packet should be MessageStart"
+        assert packets[-3].obj.type == "message_start", "Third-to-last packet should be MessageStart"
         from onyx.server.query_and_chat.streaming_models import MessageStart
 
-        assert isinstance(
-            packets[-3].obj, MessageStart
-        ), "Third-to-last packet should be MessageStart instance"
-        assert (
-            packets[-3].obj.content == "Cancelled"
-        ), "MessageStart should contain 'Cancelled'"
+        assert isinstance(packets[-3].obj, MessageStart), "Third-to-last packet should be MessageStart instance"
+        assert packets[-3].obj.content == "Cancelled", "MessageStart should contain 'Cancelled'"
 
 
 def create_cancellation_model(
@@ -191,9 +174,7 @@ class FakeCancellationModel(CancellationMixin, StreamableFakeModel):
             final_response = create_fake_response(response_id, msg)
 
             # 1) created
-            yield ResponseCreatedEvent(
-                response=final_response, sequence_number=1, type="response.created"
-            )
+            yield ResponseCreatedEvent(response=final_response, sequence_number=1, type="response.created")
 
             # 2) stream some text (delta) - trigger stop signal during streaming
             for i in range(5):
@@ -212,9 +193,7 @@ class FakeCancellationModel(CancellationMixin, StreamableFakeModel):
                     self._trigger_cancellation()
 
             # 3) completed
-            yield ResponseCompletedEvent(
-                response=final_response, sequence_number=3, type="response.completed"
-            )
+            yield ResponseCompletedEvent(response=final_response, sequence_number=3, type="response.completed")
 
         return _gen()
 
@@ -237,13 +216,9 @@ class FakeToolCallModel(CancellationMixin, StreamableFakeModel):
         prompt: Any = None,
     ) -> ModelResponse:
         """Override to create a response with tool calls."""
-        message = create_fake_message(
-            text="I need to use a tool", include_tool_calls=True
-        )
+        message = create_fake_message(text="I need to use a tool", include_tool_calls=True)
         usage = create_fake_usage()
-        return ModelResponse(
-            output=[message], usage=usage, response_id="fake-response-id"
-        )
+        return ModelResponse(output=[message], usage=usage, response_id="fake-response-id")
 
     def _create_stream_events(  # type: ignore[override]
         self,
@@ -254,20 +229,12 @@ class FakeToolCallModel(CancellationMixin, StreamableFakeModel):
 
         async def _gen() -> AsyncIterator[object]:  # type: ignore[misc]
             # Create message if not provided
-            msg = (
-                message
-                if message is not None
-                else create_fake_message(
-                    text="I need to use a tool", include_tool_calls=True
-                )
-            )
+            msg = message if message is not None else create_fake_message(text="I need to use a tool", include_tool_calls=True)
 
             final_response = create_fake_response(response_id, msg)
 
             # 1) created
-            yield ResponseCreatedEvent(
-                response=final_response, sequence_number=1, type="response.created"
-            )
+            yield ResponseCreatedEvent(response=final_response, sequence_number=1, type="response.created")
 
             # 2) stream tool call deltas - trigger stop signal during streaming
             for i in range(5):
@@ -284,9 +251,7 @@ class FakeToolCallModel(CancellationMixin, StreamableFakeModel):
                     self._trigger_cancellation()
 
             # 3) completed with the full Response object (including tool calls)
-            yield ResponseCompletedEvent(
-                response=final_response, sequence_number=2, type="response.completed"
-            )
+            yield ResponseCompletedEvent(response=final_response, sequence_number=2, type="response.completed")
 
         return _gen()
 
@@ -312,9 +277,7 @@ class FakeFailingModel(BaseFakeModel):
 
         async def _gen() -> AsyncIterator[object]:  # type: ignore[misc]
             fake_response = create_fake_response(response_id="fake-response-id")
-            yield ResponseCreatedEvent(
-                response=fake_response, sequence_number=1, type="response.created"
-            )
+            yield ResponseCreatedEvent(response=fake_response, sequence_number=1, type="response.created")
 
             # Stream some deltas before failing
             for i in range(5):
@@ -456,9 +419,7 @@ def test_fast_chat_turn_cancellation(
     not during regular message streaming.
     """
     # Replace the model with our cancellation model that triggers stop signal during streaming
-    cancellation_model = create_cancellation_model(
-        FakeCancellationModel, chat_turn_dependencies, chat_session_id
-    )
+    cancellation_model = create_cancellation_model(FakeCancellationModel, chat_turn_dependencies, chat_session_id)
     chat_turn_dependencies.llm_model = cancellation_model
 
     packets = run_fast_chat_turn(
@@ -489,9 +450,7 @@ def test_fast_chat_turn_tool_call_cancellation(
     3. OverallStop packet
     """
     # Replace the model with our tool call model
-    cancellation_model = create_cancellation_model(
-        FakeToolCallModel, chat_turn_dependencies, chat_session_id
-    )
+    cancellation_model = create_cancellation_model(FakeToolCallModel, chat_turn_dependencies, chat_session_id)
     chat_turn_dependencies.llm_model = cancellation_model
 
     packets = run_fast_chat_turn(
@@ -938,9 +897,7 @@ def test_fast_chat_turn_citation_processing(
 
     # Create a custom model with citation text
     citation_text = "Based on the search results, here's the answer with citations [1]"
-    citation_model = get_model_with_response(
-        response_text=citation_text, stream_word_by_word=True
-    )
+    citation_model = get_model_with_response(response_text=citation_text, stream_word_by_word=True)
     chat_turn_context.run_dependencies.llm_model = citation_model
 
     # Create a fake prompt config
@@ -1022,10 +979,7 @@ def test_fast_chat_turn_citation_processing(
             message_start_found = True
             message_start_index = packet.ind
             # Verify that final_documents is populated with cited documents
-            if (
-                packet.obj.final_documents is not None
-                and len(packet.obj.final_documents) > 0
-            ):
+            if packet.obj.final_documents is not None and len(packet.obj.final_documents) > 0:
                 # Verify the document ID matches our test document
                 assert packet.obj.final_documents[0].document_id == "test-doc-1"
         elif packet.obj.type == "message_delta":
@@ -1046,11 +1000,7 @@ def test_fast_chat_turn_citation_processing(
             assert citation.citation_num == 1
             # Verify citation packet has the same index as citation start
             assert packet.ind == citation_start_index
-        elif (
-            isinstance(packet.obj, SectionEnd)
-            and citation_start_found
-            and citation_delta_found
-        ):
+        elif isinstance(packet.obj, SectionEnd) and citation_start_found and citation_delta_found:
             citation_section_end_found = True
             # Verify citation section end has the same index
             assert packet.ind == citation_start_index
@@ -1064,11 +1014,32 @@ def test_fast_chat_turn_citation_processing(
     # Verify that citation packets are emitted after message packets (higher index)
     assert message_start_index is not None, "message_start_index should be set"
     assert citation_start_index is not None, "citation_start_index should be set"
-    assert (
-        citation_start_index > message_start_index
-    ), f"Citation packets (index {citation_start_index}) > message start (index {message_start_index})"
+    assert citation_start_index > message_start_index, (
+        f"Citation packets (index {citation_start_index}) > message start (index {message_start_index})"
+    )
 
     # Verify the collected text contains the expected citation format
-    assert (
-        "[[1]](https://example.com/test-doc)" in collected_text
-    ), f"Expected citation link not found in collected text: {collected_text}"
+    assert "[[1]](https://example.com/test-doc)" in collected_text, (
+        f"Expected citation link not found in collected text: {collected_text}"
+    )
+
+
+def test_strip_previous_answer_prefix_basic() -> None:
+    from onyx.chat.turn.fast_chat_turn import _strip_previous_answer_prefix
+
+    remainder, trimmed = _strip_previous_answer_prefix("Hello world", "Hello world Next steps")
+
+    assert trimmed is True
+    assert remainder == "Next steps"
+
+
+def test_strip_previous_answer_prefix_whitespace() -> None:
+    from onyx.chat.turn.fast_chat_turn import _strip_previous_answer_prefix
+
+    previous = "Line one  \nLine two"
+    combined = "Line one\nLine two\nLine three"
+
+    remainder, trimmed = _strip_previous_answer_prefix(previous, combined)
+
+    assert trimmed is True
+    assert remainder == "Line three"
