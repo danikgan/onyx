@@ -205,5 +205,8 @@ def internal_search(
     retrieved_docs = _internal_search_core(
         run_context, queries, cast(SearchTool, search_pipeline_instance)
     )
-    adapter = TypeAdapter(list[LlmInternalSearchResult])
-    return f"Search results for queries {queries}:\n" + adapter.dump_json(retrieved_docs).decode()
+    # Format the results as a readable string instead of JSON
+    results_str = f"Search results for queries {queries}:\n"
+    for doc in retrieved_docs:
+        results_str += f"\nDocument: {doc.title}\nContent:\n{doc.excerpt}\n"
+    return results_str
