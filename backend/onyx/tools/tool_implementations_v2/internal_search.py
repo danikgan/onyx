@@ -206,4 +206,4 @@ def internal_search(
         run_context, queries, cast(SearchTool, search_pipeline_instance)
     )
     adapter = TypeAdapter(list[LlmInternalSearchResult])
-    return adapter.dump_json(retrieved_docs).decode()
+    return f"Search results for queries {queries}:\n" + adapter.dump_json(retrieved_docs).decode()
