@@ -2,47 +2,40 @@ import copy
 import io
 import json
 import re
-from collections.abc import Callable
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
-from typing import cast
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.prompts.base import StringPromptValue
 from langchain.prompts.chat import ChatPromptValue
 from langchain.schema import PromptValue
 from langchain.schema.language_model import LanguageModelInput
-from langchain.schema.messages import AIMessage
-from langchain.schema.messages import BaseMessage
-from langchain.schema.messages import HumanMessage
-from langchain.schema.messages import SystemMessage
+from langchain.schema.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy import select
 
-from onyx.configs.app_configs import LITELLM_CUSTOM_ERROR_MESSAGE_MAPPINGS
-from onyx.configs.app_configs import MAX_TOKENS_FOR_FULL_INCLUSION
-from onyx.configs.app_configs import USE_CHUNK_SUMMARY
-from onyx.configs.app_configs import USE_DOCUMENT_SUMMARY
+from onyx.configs.app_configs import (
+    LITELLM_CUSTOM_ERROR_MESSAGE_MAPPINGS,
+    MAX_TOKENS_FOR_FULL_INCLUSION,
+    USE_CHUNK_SUMMARY,
+    USE_DOCUMENT_SUMMARY,
+)
 from onyx.configs.constants import MessageType
-from onyx.configs.model_configs import DOC_EMBEDDING_CONTEXT_SIZE
-from onyx.configs.model_configs import GEN_AI_MAX_TOKENS
-from onyx.configs.model_configs import GEN_AI_MODEL_FALLBACK_MAX_TOKENS
-from onyx.configs.model_configs import GEN_AI_NUM_RESERVED_OUTPUT_TOKENS
+from onyx.configs.model_configs import (
+    DOC_EMBEDDING_CONTEXT_SIZE,
+    GEN_AI_MAX_TOKENS,
+    GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+    GEN_AI_NUM_RESERVED_OUTPUT_TOKENS,
+)
 from onyx.db.engine.sql_engine import get_session_with_current_tenant
-from onyx.db.models import LLMProvider
-from onyx.db.models import ModelConfiguration
-from onyx.file_store.models import ChatFileType
-from onyx.file_store.models import InMemoryChatFile
+from onyx.db.models import LLMProvider, ModelConfiguration
+from onyx.file_store.models import ChatFileType, InMemoryChatFile
 from onyx.llm.interfaces import LLM
-from onyx.prompts.chat_prompts import CONTEXTUAL_RAG_TOKEN_ESTIMATE
-from onyx.prompts.chat_prompts import DOCUMENT_SUMMARY_TOKEN_ESTIMATE
+from onyx.prompts.chat_prompts import CONTEXTUAL_RAG_TOKEN_ESTIMATE, DOCUMENT_SUMMARY_TOKEN_ESTIMATE
 from onyx.prompts.constants import CODE_BLOCK_PAT
-from onyx.utils.b64 import get_image_type
-from onyx.utils.b64 import get_image_type_from_bytes
+from onyx.utils.b64 import get_image_type, get_image_type_from_bytes
 from onyx.utils.logger import setup_logger
 from shared_configs.configs import LOG_LEVEL
-
 
 if TYPE_CHECKING:
     from onyx.server.manage.llm.models import LLMProviderView
@@ -61,14 +54,38 @@ _TWELVE_LABS_PEGASUS_MODEL_NAMES = [
 ]
 _TWELVE_LABS_PEGASUS_OUTPUT_TOKENS = max(512, GEN_AI_MODEL_FALLBACK_MAX_TOKENS // 4)
 CUSTOM_LITELLM_MODEL_OVERRIDES: dict[str, dict[str, Any]] = {
-    model_name: {
-        "max_input_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
-        "max_output_tokens": _TWELVE_LABS_PEGASUS_OUTPUT_TOKENS,
-        "max_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+    **{
+        model_name: {
+            "max_input_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+            "max_output_tokens": _TWELVE_LABS_PEGASUS_OUTPUT_TOKENS,
+            "max_tokens": GEN_AI_MODEL_FALLBACK_MAX_TOKENS,
+            "supports_reasoning": False,
+            "supports_vision": False,
+        }
+        for model_name in _TWELVE_LABS_PEGASUS_MODEL_NAMES
+    },
+    # Custom overrides for models not present in litellm.model_cost
+    "gpt-oss:20b": {
+        "max_input_tokens": 131_072,
+        "max_output_tokens": 131_072,
+        "max_tokens": 131_072,
         "supports_reasoning": False,
         "supports_vision": False,
-    }
-    for model_name in _TWELVE_LABS_PEGASUS_MODEL_NAMES
+    },
+    "qwen3:14b": {
+        "max_input_tokens": 40_960,
+        "max_output_tokens": 40_960,
+        "max_tokens": 40_960,
+        "supports_reasoning": False,
+        "supports_vision": False,
+    },
+    "qwen3:4b": {
+        "max_input_tokens": 262_144,
+        "max_output_tokens": 262_144,
+        "max_tokens": 262_144,
+        "supports_reasoning": False,
+        "supports_vision": False,
+    },
 }
 
 
@@ -84,11 +101,7 @@ def _unwrap_nested_exception(error: Exception) -> Exception:
         cause = getattr(current, "__cause__", None)
         if isinstance(cause, Exception):
             candidate = cause
-        elif (
-            hasattr(current, "args")
-            and len(getattr(current, "args")) == 1
-            and isinstance(current.args[0], Exception)
-        ):
+        elif hasattr(current, "args") and len(getattr(current, "args")) == 1 and isinstance(current.args[0], Exception):
             candidate = current.args[0]
         if candidate is None or id(candidate) in visited:
             break
@@ -100,22 +113,22 @@ def litellm_exception_to_error_msg(
     e: Exception,
     llm: LLM,
     fallback_to_error_msg: bool = False,
-    custom_error_msg_mappings: (
-        dict[str, str] | None
-    ) = LITELLM_CUSTOM_ERROR_MESSAGE_MAPPINGS,
+    custom_error_msg_mappings: (dict[str, str] | None) = LITELLM_CUSTOM_ERROR_MESSAGE_MAPPINGS,
 ) -> str:
-    from litellm.exceptions import BadRequestError
-    from litellm.exceptions import AuthenticationError
-    from litellm.exceptions import PermissionDeniedError
-    from litellm.exceptions import NotFoundError
-    from litellm.exceptions import UnprocessableEntityError
-    from litellm.exceptions import RateLimitError
-    from litellm.exceptions import ContextWindowExceededError
-    from litellm.exceptions import APIConnectionError
-    from litellm.exceptions import APIError
-    from litellm.exceptions import Timeout
-    from litellm.exceptions import ContentPolicyViolationError
-    from litellm.exceptions import BudgetExceededError
+    from litellm.exceptions import (
+        APIConnectionError,
+        APIError,
+        AuthenticationError,
+        BadRequestError,
+        BudgetExceededError,
+        ContentPolicyViolationError,
+        ContextWindowExceededError,
+        NotFoundError,
+        PermissionDeniedError,
+        RateLimitError,
+        Timeout,
+        UnprocessableEntityError,
+    )
 
     core_exception = _unwrap_nested_exception(e)
     error_msg = str(core_exception)
@@ -131,19 +144,14 @@ def litellm_exception_to_error_msg(
         error_msg = "Authentication failed: Please check your API key and credentials."
     elif isinstance(core_exception, PermissionDeniedError):
         error_msg = (
-            "Permission denied: You don't have the necessary permissions for this operation."
-            "Ensure you have access to this model."
+            "Permission denied: You don't have the necessary permissions for this operation.Ensure you have access to this model."
         )
     elif isinstance(core_exception, NotFoundError):
         error_msg = "Resource not found: The requested resource doesn't exist."
     elif isinstance(core_exception, UnprocessableEntityError):
         error_msg = "Unprocessable entity: The server couldn't process your request due to semantic errors."
     elif isinstance(core_exception, RateLimitError):
-        provider_name = (
-            llm.config.model_provider
-            if llm is not None and llm.config.model_provider
-            else "The LLM provider"
-        )
+        provider_name = llm.config.model_provider if llm is not None and llm.config.model_provider else "The LLM provider"
         upstream_detail: str | None = None
         message_attr = getattr(core_exception, "message", None)
         if message_attr:
@@ -151,17 +159,11 @@ def litellm_exception_to_error_msg(
         elif hasattr(core_exception, "api_error"):
             api_error = core_exception.api_error  # type: ignore[attr-defined]
             if isinstance(api_error, dict):
-                upstream_detail = (
-                    api_error.get("message")
-                    or api_error.get("detail")
-                    or api_error.get("error")
-                )
+                upstream_detail = api_error.get("message") or api_error.get("detail") or api_error.get("error")
         if not upstream_detail:
             upstream_detail = str(core_exception)
         upstream_detail = str(upstream_detail).strip()
-        if ":" in upstream_detail and upstream_detail.lower().startswith(
-            "ratelimiterror"
-        ):
+        if ":" in upstream_detail and upstream_detail.lower().startswith("ratelimiterror"):
             upstream_detail = upstream_detail.split(":", 1)[1].strip()
         error_msg = (
             f"{provider_name} rate limit: {upstream_detail}"
@@ -169,9 +171,7 @@ def litellm_exception_to_error_msg(
             else f"{provider_name} rate limit exceeded: Please slow down your requests and try again later."
         )
     elif isinstance(core_exception, ContextWindowExceededError):
-        error_msg = (
-            "Context window exceeded: Your input is too long for the model to process."
-        )
+        error_msg = "Context window exceeded: Your input is too long for the model to process."
         if llm is not None:
             try:
                 max_context = get_max_input_tokens(
@@ -180,24 +180,17 @@ def litellm_exception_to_error_msg(
                 )
                 error_msg += f"Your invoked model ({llm.config.model_name}) has a maximum context size of {max_context}"
             except Exception:
-                logger.warning(
-                    "Unable to get maximum input token for LiteLLM excpetion handling"
-                )
+                logger.warning("Unable to get maximum input token for LiteLLM excpetion handling")
     elif isinstance(core_exception, ContentPolicyViolationError):
         error_msg = "Content policy violation: Your request violates the content policy. Please revise your input."
     elif isinstance(core_exception, APIConnectionError):
         error_msg = "API connection error: Failed to connect to the API. Please check your internet connection."
     elif isinstance(core_exception, BudgetExceededError):
-        error_msg = (
-            "Budget exceeded: You've exceeded your allocated budget for API usage."
-        )
+        error_msg = "Budget exceeded: You've exceeded your allocated budget for API usage."
     elif isinstance(core_exception, Timeout):
         error_msg = "Request timed out: The operation took too long to complete. Please try again."
     elif isinstance(core_exception, APIError):
-        error_msg = (
-            "API error: An error occurred while communicating with the API. "
-            f"Details: {str(core_exception)}"
-        )
+        error_msg = f"API error: An error occurred while communicating with the API. Details: {str(core_exception)}"
     elif not fallback_to_error_msg:
         error_msg = "An unexpected error occurred while processing your request. Please try again later."
     return error_msg
@@ -220,9 +213,7 @@ def _build_content(
     for file in text_files:
         file_content = _decode_text_file_content(file)
         file_name_section = f"DOCUMENT: {file.filename}\n" if file.filename else ""
-        final_message_with_files += (
-            f"{file_name_section}{CODE_BLOCK_PAT.format(file_content.strip())}\n\n\n"
-        )
+        final_message_with_files += f"{file_name_section}{CODE_BLOCK_PAT.format(file_content.strip())}\n\n\n"
 
     return final_message_with_files + message
 
@@ -246,9 +237,7 @@ def _extract_non_utf8_text_file(file: InMemoryChatFile) -> str:
     )
 
     candidate_extension = _infer_extension(file)
-    supported_extensions = set(
-        ACCEPTED_DOCUMENT_FILE_EXTENSIONS + ACCEPTED_PLAIN_TEXT_FILE_EXTENSIONS
-    )
+    supported_extensions = set(ACCEPTED_DOCUMENT_FILE_EXTENSIONS + ACCEPTED_PLAIN_TEXT_FILE_EXTENSIONS)
 
     if candidate_extension and candidate_extension in supported_extensions:
         try:
@@ -310,11 +299,7 @@ def build_content_with_imgs(
     files = files or []
 
     # Only include image files for user messages
-    img_files = (
-        [file for file in files if file.file_type == ChatFileType.IMAGE]
-        if message_type == MessageType.USER
-        else []
-    )
+    img_files = [file for file in files if file.file_type == ChatFileType.IMAGE] if message_type == MessageType.USER else []
 
     img_urls = img_urls or []
     b64_imgs = b64_imgs or []
@@ -335,10 +320,7 @@ def build_content_with_imgs(
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": (
-                        f"data:{get_image_type_from_bytes(file.content)};"
-                        f"base64,{file.to_base64()}"
-                    ),
+                    "url": (f"data:{get_image_type_from_bytes(file.content)};base64,{file.to_base64()}"),
                 },
             }
             for file in img_files
@@ -425,10 +407,7 @@ def convert_lm_input_to_basic_string(lm_input: LanguageModelInput) -> str:
         prompt_value = ChatPromptValue(messages=lm_input)
 
     if prompt_value is None:
-        raise ValueError(
-            f"Invalid input type {type(lm_input)}. "
-            "Must be a PromptValue, str, or list of BaseMessages."
-        )
+        raise ValueError(f"Invalid input type {type(lm_input)}. Must be a PromptValue, str, or list of BaseMessages.")
 
     return prompt_value.to_string()
 
@@ -457,9 +436,7 @@ def should_be_verbose() -> bool:
 _IMG_TOKENS = 85
 
 
-def check_message_tokens(
-    message: BaseMessage, encode_fn: Callable[[str], list] | None = None
-) -> int:
+def check_message_tokens(message: BaseMessage, encode_fn: Callable[[str], list] | None = None) -> int:
     if isinstance(message.content, str):
         return check_number_of_tokens(message.content, encode_fn)
 
@@ -476,17 +453,13 @@ def check_message_tokens(
 
     if isinstance(message, AIMessage) and message.tool_calls:
         for tool_call in message.tool_calls:
-            total_tokens += check_number_of_tokens(
-                json.dumps(tool_call["args"]), encode_fn
-            )
+            total_tokens += check_number_of_tokens(json.dumps(tool_call["args"]), encode_fn)
             total_tokens += check_number_of_tokens(tool_call["name"], encode_fn)
 
     return total_tokens
 
 
-def check_number_of_tokens(
-    text: str, encode_fn: Callable[[str], list] | None = None
-) -> int:
+def check_number_of_tokens(text: str, encode_fn: Callable[[str], list] | None = None) -> int:
     """Gets the number of tokens in the provided text, using the provided encoding
     function. If none is provided, default to the tiktoken encoder used by GPT-3.5
     and GPT-4.
@@ -533,9 +506,7 @@ def get_model_map() -> dict:
             # has the most filled out fields.
             existing_truncated_value = starting_map.get(truncated_key)
             potential_truncated_value = original_map[key]
-            if not existing_truncated_value or len(potential_truncated_value) > len(
-                existing_truncated_value
-            ):
+            if not existing_truncated_value or len(potential_truncated_value) > len(existing_truncated_value):
                 starting_map[truncated_key] = potential_truncated_value
 
     for model_name, model_metadata in CUSTOM_LITELLM_MODEL_OVERRIDES.items():
@@ -645,9 +616,7 @@ def get_llm_contextual_cost(
 
         # for each chunk, we prompt the LLM with the contextual RAG prompt
         # and the full document content (or the doc summary, so this is an overestimate)
-        num_input_tokens += num_input_chunks * (
-            CONTEXTUAL_RAG_TOKEN_ESTIMATE + MAX_TOKENS_FOR_FULL_INCLUSION
-        )
+        num_input_tokens += num_input_chunks * (CONTEXTUAL_RAG_TOKEN_ESTIMATE + MAX_TOKENS_FOR_FULL_INCLUSION)
 
         # in aggregate, each chunk content is used as a prompt input once
         # so the full input size is covered
@@ -699,9 +668,7 @@ def get_llm_max_tokens(
             model_name,
         )
         if not model_obj:
-            raise RuntimeError(
-                f"No litellm entry found for {model_provider}/{model_name}"
-            )
+            raise RuntimeError(f"No litellm entry found for {model_provider}/{model_name}")
 
         if "max_input_tokens" in model_obj:
             max_tokens = model_obj["max_input_tokens"]
@@ -817,17 +784,13 @@ def model_supports_image_input(model_name: str, model_provider: str) -> bool:
             if model_config and model_config.supports_image_input is not None:
                 return model_config.supports_image_input
     except Exception as e:
-        logger.warning(
-            f"Failed to query database for {model_provider} model {model_name} image support: {e}"
-        )
+        logger.warning(f"Failed to query database for {model_provider} model {model_name} image support: {e}")
 
     # Fallback to looking up the model in the litellm model_cost dict
     return litellm_thinks_model_supports_image_input(model_name, model_provider)
 
 
-def litellm_thinks_model_supports_image_input(
-    model_name: str, model_provider: str
-) -> bool:
+def litellm_thinks_model_supports_image_input(model_name: str, model_provider: str) -> bool:
     """Generally should call `model_supports_image_input` unless you already know that
     `model_supports_image_input` from the DB is not set OR you need to avoid the performance
     hit of querying the DB."""
@@ -835,16 +798,13 @@ def litellm_thinks_model_supports_image_input(
         model_obj = find_model_obj(get_model_map(), model_provider, model_name)
         if not model_obj:
             logger.warning(
-                f"No litellm entry found for {model_provider}/{model_name}, "
-                "this model may or may not support image input."
+                f"No litellm entry found for {model_provider}/{model_name}, this model may or may not support image input."
             )
             return False
         # The or False here is because sometimes the dict contains the key but the value is None
         return model_obj.get("supports_vision", False) or False
     except Exception:
-        logger.exception(
-            f"Failed to get model object for {model_provider}/{model_name}"
-        )
+        logger.exception(f"Failed to get model object for {model_provider}/{model_name}")
         return False
 
 
@@ -864,22 +824,14 @@ def model_is_reasoning_model(model_name: str, model_provider: str) -> bool:
         # Fallback: try using litellm.supports_reasoning() for newer models
         try:
             logger.debug("Falling back to `litellm.supports_reasoning`")
-            full_model_name = (
-                f"{model_provider}/{model_name}"
-                if model_provider not in model_name
-                else model_name
-            )
+            full_model_name = f"{model_provider}/{model_name}" if model_provider not in model_name else model_name
             return litellm.supports_reasoning(model=full_model_name)
         except Exception:
-            logger.exception(
-                f"Failed to check if {model_provider}/{model_name} supports reasoning"
-            )
+            logger.exception(f"Failed to check if {model_provider}/{model_name} supports reasoning")
             return False
 
     except Exception:
-        logger.exception(
-            f"Failed to get model object for {model_provider}/{model_name}"
-        )
+        logger.exception(f"Failed to get model object for {model_provider}/{model_name}")
         return False
 
 
@@ -902,18 +854,13 @@ def is_true_openai_model(model_provider: str, model_name: str) -> bool:
         if f"openai/{model_name}" in model_map:
             return True
 
-        if (
-            model_name in model_map
-            and model_map[model_name].get("litellm_provider") == "openai"
-        ):
+        if model_name in model_map and model_map[model_name].get("litellm_provider") == "openai":
             return True
 
         return False
 
     except Exception:
-        logger.exception(
-            f"Failed to determine if {model_provider}/{model_name} is a true OpenAI model"
-        )
+        logger.exception(f"Failed to determine if {model_provider}/{model_name} is a true OpenAI model")
         return False
 
 
@@ -926,11 +873,7 @@ def model_needs_formatting_reenabled(model_name: str) -> bool:
 
     # Pattern matches if any of these model names appear with word boundaries
     # Word boundaries include: start/end of string, space, hyphen, or forward slash
-    pattern = (
-        r"(?:^|[\s\-/])("
-        + "|".join(re.escape(name) for name in model_names)
-        + r")(?:$|[\s\-/])"
-    )
+    pattern = r"(?:^|[\s\-/])(" + "|".join(re.escape(name) for name in model_names) + r")(?:$|[\s\-/])"
 
     if re.search(pattern, model_name):
         return True
