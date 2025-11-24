@@ -597,56 +597,6 @@ export default function ActionsPopover({
   // If no tools or MCP servers are available, don't render the component
   if (displayTools.length === 0 && mcpServers.length === 0) return null;
 
-  return (
-    <>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <div data-testid="action-management-toggle">
-            <IconButton
-              icon={SvgSliders}
-              transient={open}
-              tertiary
-              tooltip="Manage Actions"
-              disabled={disabled}
-            />
-          </div>
-        </PopoverTrigger>
-        <PopoverContent side="bottom" align="start">
-          <div data-testid="tool-options">
-            {secondaryView
-              ? secondaryView.type === "mcp"
-                ? mcpView
-                : toolsView
-              : primaryView}
-          </div>
-        </PopoverContent>
-      </Popover>
-
-      {/* MCP API Key Modal */}
-      {mcpApiKeyModal.isOpen && (
-        <MCPApiKeyModal
-          isOpen={mcpApiKeyModal.isOpen}
-          onClose={() =>
-            setMcpApiKeyModal({
-              isOpen: false,
-              serverId: null,
-              serverName: "",
-              authTemplate: undefined,
-              onSuccess: undefined,
-              isAuthenticated: false,
-              existingCredentials: undefined,
-            })
-          }
-          serverName={mcpApiKeyModal.serverName}
-          serverId={mcpApiKeyModal.serverId ?? 0}
-          authTemplate={mcpApiKeyModal.authTemplate}
-          onSubmit={handleMCPApiKeySubmit}
-          onSubmitCredentials={handleMCPCredentialsSubmit}
-          onSuccess={mcpApiKeyModal.onSuccess}
-          isAuthenticated={mcpApiKeyModal.isAuthenticated}
-          existingCredentials={mcpApiKeyModal.existingCredentials}
-        />
-      )}
-    </>
-  );
+  // Hiding the "Manage Actions" button as per requirements
+  return null;
 }

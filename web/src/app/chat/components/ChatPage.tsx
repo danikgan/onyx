@@ -605,13 +605,21 @@ export default function ChatPage({
   }, []);
 
   const handleChatInputSubmit = useCallback(() => {
+    if (ccPairs.length === 0) {
+      setPopup({
+        message: "Add a connector",
+        type: "error",
+      });
+      return;
+    }
+
     onSubmit({
       message: message,
       currentMessageFiles: currentMessageFiles,
       useAgentSearch: deepResearchEnabled,
     });
     setShowOnboarding(false);
-  }, [message, onSubmit, currentMessageFiles, deepResearchEnabled]);
+  }, [message, onSubmit, currentMessageFiles, deepResearchEnabled, ccPairs]);
 
   // Memoized callbacks for DocumentResults
   const handleMobileDocumentSidebarClose = useCallback(() => {

@@ -208,5 +208,5 @@ def internal_search(
     # Format the results as a readable string instead of JSON
     results_str = f"Search results for queries {queries}:\n"
     for doc in retrieved_docs:
-        results_str += f"\nDocument: {doc.title}\nContent:\n{doc.excerpt}\n"
+        results_str += f"\nDocument title: {doc.title}\nDocument content:\n{doc.excerpt}\n"
     return results_str

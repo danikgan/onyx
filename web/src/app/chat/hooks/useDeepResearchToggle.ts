@@ -22,7 +22,7 @@ export function useDeepResearchToggle({
   chatSessionId,
   assistantId,
 }: UseDeepResearchToggleProps) {
-  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(true);
   const previousChatSessionId = useRef<string | null>(chatSessionId);
 
   // Reset when switching chat sessions, but preserve when going from null to a new session
