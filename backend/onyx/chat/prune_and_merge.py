@@ -124,7 +124,12 @@ def _compute_limit(
             llm_config.max_input_tokens
             - existing_input_tokens
             - tool_token_count
-            - 40  # _MISC_BUFFER from compute_max_document_tokens
+            # _MISC_BUFFER from compute_max_document_tokens is 40
+            # For some models (e.g. non-OpenAI), the token counting can be off by a bit
+            # especially for non-English languages.
+            # To be safe, we add a dynamic buffer of 5% of the remaining tokens or 500 tokens
+            # whichever is larger.
+            - max(500, int((llm_config.max_input_tokens - existing_input_tokens) * 0.05))
         )
 
     window_percentage_based_limit = (

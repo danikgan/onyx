@@ -43,6 +43,6 @@ def maybe_append_reminder(
         "type": "input_text",
         "text": reminder_text,
     }
-    reminder_message: UserMessage = {"role": "user", "content": [text_content]}
+    reminder_message: AgentSDKMessage = {"role": "system", "content": [text_content]}
 
     return list(agent_turn_messages) + [reminder_message]

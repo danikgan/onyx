@@ -173,7 +173,9 @@ def _run_agent_loop(
         # Apply context handlers in order:
         # 1. Remove all user messages in the middle (previous reminders)
         agent_turn_messages = [
-            msg for msg in agent_turn_messages if msg.get("role") != "user"
+            msg
+            for msg in agent_turn_messages
+            if msg.get("role") != "user" and msg.get("role") != "system"
         ]
 
         # 2. Add task prompt reminder
