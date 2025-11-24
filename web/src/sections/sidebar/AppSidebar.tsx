@@ -438,29 +438,34 @@ function AppSidebarInner() {
         <SidebarBody footer={settingsButton} actionButton={newSessionButton}>
           {folded ? (
             <>
-              {moreAgentsButton}
+              {isAdmin && moreAgentsButton}
               {newProjectButton}
             </>
           ) : (
             <>
               {/* Agents */}
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleAgentDragEnd}
-              >
-                <SidebarSection title="Agents">
-                  <SortableContext
-                    items={visibleAgentIds}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {visibleAgents.map((visibleAgent) => (
-                      <AgentButton key={visibleAgent.id} agent={visibleAgent} />
-                    ))}
-                  </SortableContext>
-                  {moreAgentsButton}
-                </SidebarSection>
-              </DndContext>
+              {isAdmin && (
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleAgentDragEnd}
+                >
+                  <SidebarSection title="Agents">
+                    <SortableContext
+                      items={visibleAgentIds}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {visibleAgents.map((visibleAgent) => (
+                        <AgentButton
+                          key={visibleAgent.id}
+                          agent={visibleAgent}
+                        />
+                      ))}
+                    </SortableContext>
+                    {moreAgentsButton}
+                  </SidebarSection>
+                </DndContext>
+              )}
 
               {/* Wrap Projects and Recents in a shared DndContext for chat-to-project drag */}
               <DndContext
