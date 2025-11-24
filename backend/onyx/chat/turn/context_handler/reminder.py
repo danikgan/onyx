@@ -41,7 +41,7 @@ def maybe_append_reminder(
 
     text_content: InputTextContent = {
         "type": "input_text",
-        "text": reminder_text,
+        "text": f"SYSTEM REMINDER: {reminder_text}",
     }
     reminder_message: AgentSDKMessage = {"role": "system", "content": [text_content]}
 

@@ -1,3 +1,7 @@
+#experiments
+runpod/
+modal-script.*
+
 # editors
 .vscode
 .zed
@@ -7,6 +11,7 @@
 
 # python
 .venv
+.modal-venv
 .mypy_cache
 .idea
 
